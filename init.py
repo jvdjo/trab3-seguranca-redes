@@ -1,140 +1,107 @@
-import pyotp
-import qrcode
-from PIL import Image
-import hashlib
 import os
-import time
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import base64
+import qrcode  # Importa a biblioteca para gerar QR Codes
+from Crypto.Cipher import AES
+from Crypto.Protocol.KDF import PBKDF2
+import pyotp
+from PIL import Image  # Importa a biblioteca Pillow para manipulação de imagens
 
+class CryptoHelper:
+    def __init__(self, password: str):
+        self.salt = os.urandom(16)  # Gera um salt aleatório
+        self.key = PBKDF2(password, self.salt, dkLen=32)  # Deriva a chave a partir da senha
 
-def exibir_menu():
-    print("Bem-vindo ao Restaurante Python!")
-    print("Escolha um prato:")
-    pratos = {
-        1: "Pizza",
-        2: "Hambúrguer",
-        3: "Sushi",
-        4: "Salada",
-        5: "Lasanha"
-    }
-    for numero, prato in pratos.items():
-        print(f"{numero}. {prato}")
-    return pratos
-
-
-def escolher_prato(pratos):
-    while True:
-        try:
-            escolha = int(input("Digite o número do prato que deseja pedir: "))
-            if escolha in pratos:
-                return pratos[escolha]
-            else:
-                print("Escolha inválida, tente novamente.")
-        except ValueError:
-            print("Por favor, insira um número válido.")
-
-
-def pedir_celular():
-    celular = input("Por favor, insira seu número de celular: ")
-    return celular
-
-
-def gerar_totp_uri(secret, user_email):
-    totp = pyotp.TOTP(secret)
-    uri = totp.provisioning_uri(name=user_email, issuer_name="Restaurante Python")
-    return uri
-
-
-def gerar_qr_code(uri):
-    qr = qrcode.make(uri)
-    qr.save("qr_code.png")
-    img = Image.open("qr_code.png")
-    img.show()
-
-
-def validar_codigo(totp):
-    while True:
-        codigo_digitado = input("Digite o código TOTP exibido no aplicativo de autenticação: ")
-        if totp.verify(codigo_digitado):
-            print("Autenticação de dois fatores bem-sucedida!")
-            return codigo_digitado
-        else:
-            print("Código inválido. Tente novamente.")
-
-
-def gerar_chave_sessao(senha, salt, iteracoes=100000):
-    chave = hashlib.pbkdf2_hmac(
-        'sha256',  # Função hash
-        senha.encode('utf-8'),  # Senha
-        salt,  # Salt
-        iteracoes  # Número de iterações
-    )
-    return chave
-
-
-def cifrar_dados_aes_gcm(chave_sessao, dados):
-    aesgcm = AESGCM(chave_sessao)
-    nonce = os.urandom(12)  # Nonce de 96 bits
-    dados_cifrados = aesgcm.encrypt(nonce, dados.encode('utf-8'), None)
-    return nonce, dados_cifrados
-
-
-def decifrar_dados_aes_gcm(chave_sessao, nonce, dados_cifrados):
-    aesgcm = AESGCM(chave_sessao)
-    dados_decifrados = aesgcm.decrypt(nonce, dados_cifrados, None)
-    return dados_decifrados.decode('utf-8')
-
-
-def main():
-    pratos = exibir_menu()
-    prato_escolhido = escolher_prato(pratos)
-    celular = pedir_celular()
-
-    print("\nGerando código TOTP para autenticação de dois fatores...")
-
-    # Gerar segredo TOTP
-    secret = pyotp.random_base32()
-    user_email = celular + "@restaurante.com"
-    uri = gerar_totp_uri(secret, user_email)
-
-    # Gerar QR Code
-    print("Escaneie o QR Code com seu aplicativo de autenticação (Google Authenticator, Authy, etc.)")
-    gerar_qr_code(uri)
-
-    # Criar o objeto TOTP para validação
-    totp = pyotp.TOTP(secret)
+    def encrypt(self, raw: bytes) -> bytes:
+        cipher = AES.new(self.key, AES.MODE_GCM)
+        ciphertext, tag = cipher.encrypt_and_digest(raw)
+        return cipher.nonce + tag + ciphertext  # Retorna nonce + tag + ciphertext
     
-    # Aguarda o usuário inserir o código
-    codigo_totp = validar_codigo(totp)
+    def decrypt(self, enc: bytes) -> bytes:
+        nonce, tag, ciphertext = enc[:16], enc[16:32], enc[32:]
+        cipher = AES.new(self.key, AES.MODE_GCM, nonce=nonce)
+        return cipher.decrypt_and_verify(ciphertext, tag)
 
-    # Geração da chave de sessão com PBKDF2
-    senha_do_usuario = input("Por favor, insira uma senha para gerar a chave de sessão: ")
-    salt = os.urandom(16)  # Geração de um salt aleatório
-    chave_sessao = gerar_chave_sessao(senha_do_usuario, salt)
+class TwoFactorAuth:
+    def __init__(self, secret: str):
+        self.totp = pyotp.TOTP(secret)  # Inicializa o TOTP com o segredo do usuário
 
-    print("\nResumo do pedido:")
-    print(f"Prato: {prato_escolhido}")
-    print(f"Celular: {celular}")
-    print("Pedido realizado com sucesso!")
+    def validate_totp(self, user_input):
+        return self.totp.verify(user_input)  # Verifica o código TOTP
 
-    # O usuário realiza o pagamento e cifra o comprovante
-    comprovante_pagamento = input("Insira o comprovante de pagamento: ")
-    nonce, comprovante_cifrado = cifrar_dados_aes_gcm(chave_sessao, comprovante_pagamento)
-    print("Comprovante cifrado e enviado ao sistema.")
+    def get_qr_code(self, username: str):
+        # Gera uma URL para o QR code
+        uri = self.totp.provisioning_uri(name=username, issuer_name='Food Delivery App')
+        # Gera o QR code
+        img = qrcode.make(uri)
+        img.save("2fa_qr_code.png")  # Salva a imagem do QR code
+        print("QR Code gerado e salvo como '2fa_qr_code.png'. Escaneie com seu aplicativo de autenticação.")
+        
+        # Abre a imagem do QR Code
+        self.open_qr_code("2fa_qr_code.png")
 
-    # O sistema decifra o comprovante de pagamento
-    comprovante_decifrado = decifrar_dados_aes_gcm(chave_sessao, nonce, comprovante_cifrado)
-    print(f"Comprovante decifrado pelo sistema: {comprovante_decifrado}")
+    def open_qr_code(self, path: str):
+        # Abre a imagem usando Pillow
+        img = Image.open(path)
+        img.show()  # Exibe a imagem
 
-    # O sistema envia uma mensagem cifrada para o usuário com o horário de entrega
-    horario_entrega = "Seu pedido chegará às 20:00."
-    nonce_mensagem, mensagem_cifrada = cifrar_dados_aes_gcm(chave_sessao, horario_entrega)
-    print("Mensagem cifrada enviada ao usuário.")
+class User:
+    def __init__(self, phone: str, password: str):
+        self.phone = phone
+        self.crypto_helper = CryptoHelper(password)
+        self.secret = pyotp.random_base32()  # Gera um segredo único para TOTP
 
-    # O usuário decifra a mensagem
-    mensagem_decifrada = decifrar_dados_aes_gcm(chave_sessao, nonce_mensagem, mensagem_cifrada)
-    print(f"Mensagem decifrada pelo usuário: {mensagem_decifrada}")
+    def place_order(self, order_details: str):
+        encrypted_order = self.crypto_helper.encrypt(order_details.encode())  # Criptografa o pedido
+        print("Order placed. Encrypted receipt:", base64.b64encode(encrypted_order).decode())
+        return encrypted_order
 
+    def authenticate(self, totp_code: str):
+        auth = TwoFactorAuth(self.secret)  # Cria instancia para verificação do TOTP
+        return auth.validate_totp(totp_code)  # Valida o TOTP fornecido
 
+class Restaurant:
+    def receive_order(self, encrypted_order: bytes):
+        print("Order received:", encrypted_order)  # Exibe o pedido recebido
+
+# Simulação do fluxo
 if __name__ == "__main__":
-    main()
+    # Entrada do usuário
+    phone = input("Enter your phone number: ")
+    password = input("Enter your password: ")
+
+    # Criando um usuário
+    user = User(phone=phone, password=password)
+    
+    # Gere código QR para TOTP
+    auth = TwoFactorAuth(user.secret)
+    auth.get_qr_code(phone)  # Usar o número como nome do usuário para QR
+
+    # Escolha do pedido
+    print("Menu:")
+    print("1. Pizza Margherita")
+    print("2. Pasta Carbonara")
+    print("3. Burger")
+    choice = int(input("Please choose a dish by number (1-3): "))
+    
+    # Definindo detalhes do pedido com base na escolha
+    if choice == 1:
+        order_details = "Pizza Margherita"
+    elif choice == 2:
+        order_details = "Pasta Carbonara"
+    elif choice == 3:
+        order_details = "Burger"
+    else:
+        print("Invalid choice!")
+        exit()
+
+    # O usuário faz um pedido
+    order = user.place_order(order_details)
+
+    # O usuário precisa inserir o código TOTP após escanear o QR Code
+    user_input = input("Enter TOTP code from your authenticator app: ").strip()
+    if user.authenticate(user_input):
+        restaurant = Restaurant()
+        restaurant.receive_order(order)  # Envia o pedido ao restaurante
+        print("Order is authenticated and sent to restaurant.")
+    else:
+        print("Authentication failed.")
