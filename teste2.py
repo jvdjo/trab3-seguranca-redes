@@ -25,9 +25,6 @@ class TwoFactorAuth:
     def __init__(self, secret: str):
         self.totp = pyotp.TOTP(secret)  # Inicializa o TOTP com o segredo do usuário
 
-    def get_totp(self):
-        return self.totp.now()  # Gera o TOTP atual
-
     def validate_totp(self, user_input):
         return self.totp.verify(user_input)  # Verifica o código TOTP
 
@@ -62,15 +59,19 @@ class User:
         auth = TwoFactorAuth(self.secret)  # Cria instancia para verificação do TOTP
         return auth.validate_totp(totp_code)  # Valida o TOTP fornecido
 
+    def create_session_key(self, totp_code: str) -> bytes:
+        """Gera uma chave de sessão usando o TOTP."""
+        return PBKDF2(totp_code, os.urandom(16), dkLen=32)  # Chave derivada do TOTP
+
 class Restaurant:
     def receive_order(self, encrypted_order: bytes):
-        print("Order received:", encrypted_order)  # Exibe o pedido recebido
+        print("Order has been successfully received by the restaurant.")
 
 # Simulação do fluxo
 if __name__ == "__main__":
     # Entrada do usuário
-    phone = input("Enter your phone number: ")
-    password = input("Enter your password: ")
+    phone = input("Digite seu número de telefone: ")
+    password = input("Digite sua senha: ")
 
     # Criando um usuário
     user = User(phone=phone, password=password)
@@ -84,7 +85,7 @@ if __name__ == "__main__":
     print("1. Pizza Margherita")
     print("2. Pasta Carbonara")
     print("3. Burger")
-    choice = int(input("Please choose a dish by number (1-3): "))
+    choice = int(input("Por favor, escolha um prato pelo número (1-3): "))
     
     # Definindo detalhes do pedido com base na escolha
     if choice == 1:
@@ -94,20 +95,37 @@ if __name__ == "__main__":
     elif choice == 3:
         order_details = "Burger"
     else:
-        print("Invalid choice!")
+        print("Escolha inválida!")
         exit()
 
     # O usuário faz um pedido
     order = user.place_order(order_details)
 
-    # O usuário solicita a TOTP
-    print("Your TOTP code is:", auth.get_totp())
-
-    # O usuário digita o código TOTP
-    user_input = input("Enter TOTP code: ").strip()
+    # O usuário deve inserir o código TOTP após escanear o QR Code
+    user_input = input("Digite o código TOTP do seu aplicativo autenticador: ").strip()
     if user.authenticate(user_input):
+        session_key = user.create_session_key(user_input)  # Cria a chave de sessão
+        print("Chave de sessão criada com sucesso.")
+
+        # Simulando o pagamento e criando um comprovante cifrado
+        payment_proof = "Comprovante de pagamento para o pedido".encode()  # Comprovante de pagamento
+        encrypted_proof = user.crypto_helper.encrypt(payment_proof)  # Usar a instância de CryptoHelper da classe User
+        print("Comprovante de pagamento cifrado:", base64.b64encode(encrypted_proof).decode())
+
+        # Decifra o comprovante antes de enviar ao restaurante
+        decrypted_proof = user.crypto_helper.decrypt(encrypted_proof)  # Usar a mesma instância
+        print("Comprovante de pagamento decifrado:", decrypted_proof.decode())
+
+        # Restaurante recebe o pedido
         restaurant = Restaurant()
         restaurant.receive_order(order)  # Envia o pedido ao restaurante
-        print("Order is authenticated and sent to restaurant.")
+
+        # Simulando o envio do horário de entrega
+        encrypted_delivery_time = user.crypto_helper.encrypt("Seu pedido chegará em 30 minutos.")
+        print("Horário de entrega cifrado enviado ao usuário:", base64.b64encode(encrypted_delivery_time).decode())
+
+        # O usuário decifra a mensagem recebida
+        decrypted_delivery_time = user.crypto_helper.decrypt(encrypted_delivery_time)
+        print("Mensagem decifrada recebida do restaurante:", decrypted_delivery_time.decode())
     else:
-        print("Authentication failed.")
+        print("Autenticação falhou.")
