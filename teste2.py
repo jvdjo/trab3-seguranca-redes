@@ -1,8 +1,10 @@
 import os
 import base64
+import qrcode  # Importa a biblioteca para gerar QR Codes
 from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import PBKDF2
 import pyotp
+from PIL import Image  # Importa a biblioteca Pillow para manipulação de imagens
 
 class CryptoHelper:
     def __init__(self, password: str):
@@ -29,6 +31,22 @@ class TwoFactorAuth:
     def validate_totp(self, user_input):
         return self.totp.verify(user_input)  # Verifica o código TOTP
 
+    def get_qr_code(self, username: str):
+        # Gera uma URL para o QR code
+        uri = self.totp.provisioning_uri(name=username, issuer_name='Food Delivery App')
+        # Gera o QR code
+        img = qrcode.make(uri)
+        img.save("2fa_qr_code.png")  # Salva a imagem do QR code
+        print("QR Code gerado e salvo como '2fa_qr_code.png'. Escaneie com seu aplicativo de autenticação.")
+        
+        # Abre a imagem do QR Code
+        self.open_qr_code("2fa_qr_code.png")
+
+    def open_qr_code(self, path: str):
+        # Abre a imagem usando Pillow
+        img = Image.open(path)
+        img.show()  # Exibe a imagem
+
 class User:
     def __init__(self, phone: str, password: str):
         self.phone = phone
@@ -41,7 +59,7 @@ class User:
         return encrypted_order
 
     def authenticate(self, totp_code: str):
-        auth = TwoFactorAuth(self.secret)  # Cria instance para verificação do TOTP
+        auth = TwoFactorAuth(self.secret)  # Cria instancia para verificação do TOTP
         return auth.validate_totp(totp_code)  # Valida o TOTP fornecido
 
 class Restaurant:
@@ -56,6 +74,10 @@ if __name__ == "__main__":
 
     # Criando um usuário
     user = User(phone=phone, password=password)
+    
+    # Gere código QR para TOTP
+    auth = TwoFactorAuth(user.secret)
+    auth.get_qr_code(phone)  # Usar o número como nome do usuário para QR
 
     # Escolha do pedido
     print("Menu:")
@@ -79,7 +101,6 @@ if __name__ == "__main__":
     order = user.place_order(order_details)
 
     # O usuário solicita a TOTP
-    auth = TwoFactorAuth(user.secret)
     print("Your TOTP code is:", auth.get_totp())
 
     # O usuário digita o código TOTP
