@@ -1,78 +1,91 @@
 import socket
 import pyotp
-import qrcode
 import os
 import hashlib
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from PIL import Image
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-# Função para cifrar dados
-def cifrar_dados_aes_gcm(chave_sessao, dados):
+# Função para derivar chave com PBKDF2
+def gerar_chave_sessao(senha, salt, iteracoes=100000):
+    chave = hashlib.pbkdf2_hmac(
+        'sha256',  # Função hash
+        senha.encode('utf-8'),  # Senha
+        salt,  # Salt
+        iteracoes  # Número de iterações
+    )
+    return chave
+
+# Função para cifrar dados com AES-GCM
+def cifrar_dados(chave_sessao, dados):
     aesgcm = AESGCM(chave_sessao)
-    nonce = os.urandom(12)
+    nonce = os.urandom(12)  # Gera um nonce aleatório de 12 bytes
     dados_cifrados = aesgcm.encrypt(nonce, dados.encode('utf-8'), None)
     return nonce, dados_cifrados
 
-# Função para decifrar a mensagem do servidor
-def decifrar_dados_aes_gcm(chave_sessao, nonce, dados_cifrados):
+# Função para decifrar dados com AES-GCM
+def decifrar_dados(chave_sessao, nonce, dados_cifrados):
     aesgcm = AESGCM(chave_sessao)
     dados_decifrados = aesgcm.decrypt(nonce, dados_cifrados, None)
     return dados_decifrados.decode('utf-8')
 
-def cliente():
-    # Interage com o usuário
+# Função para realizar o login com autenticação 2FA
+def login_cliente():
+    # Coleta do nome de usuário e número de celular
+    usuario = input("Informe seu nome de usuário: ")
     celular = input("Informe seu número de celular: ")
 
-    # Gerando TOTP e QR Code
-    secret = pyotp.random_base32()
-    uri = pyotp.TOTP(secret).provisioning_uri(name=celular + "@restaurante.com", issuer_name="Restaurante Python")
-    qr = qrcode.make(uri)
-    qr.save("qr_code.png")
+    # Envia as informações de login para o servidor
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.connect(('localhost', 12345))
+    
+    # Envia o nome de usuário e celular para o servidor
+    client_socket.send(usuario.encode('utf-8'))
+    client_socket.send(celular.encode('utf-8'))
+
+    # Recebe o QR Code do servidor
+    with open("qr_code.png", "wb") as f:
+        qr_code = client_socket.recv(4096)
+        f.write(qr_code)
+    
     img = Image.open("qr_code.png")
     img.show()
 
-    # Valida o TOTP
-    totp = pyotp.TOTP(secret)
-    input("Escaneie o QR code e pressione Enter.")
-    codigo_digitado = input("Digite o código TOTP exibido no aplicativo: ")
+    # O usuário insere o código TOTP
+    codigo_totp = input("Digite o código TOTP exibido no aplicativo de autenticação: ")
 
-    if not totp.verify(codigo_digitado):
-        print("Autenticação falhou.")
-        return
+    # Envia o código TOTP para o servidor
+    client_socket.send(codigo_totp.encode('utf-8'))
 
-    print("Autenticação bem-sucedida!")
+    # Recebe a resposta do servidor
+    resposta = client_socket.recv(1024).decode('utf-8')
+    print(resposta)
 
-    # Gera chave de sessão com PBKDF2
-    senha_do_usuario = input("Por favor, insira uma senha para gerar a chave de sessão: ")
-    salt = os.urandom(16)
-    chave_sessao = hashlib.pbkdf2_hmac('sha256', senha_do_usuario.encode('utf-8'), salt, 100000)
+    # Caso o login tenha sido bem-sucedido, derivamos a chave de sessão
+    if "sucesso" in resposta:
+        senha = input("Insira sua senha para derivar a chave de sessão: ")
+        salt = client_socket.recv(16)  # Recebe o salt gerado pelo servidor
+        chave_sessao = gerar_chave_sessao(senha, salt)
+        print(f"Chave de sessão gerada: {chave_sessao.hex()}")
 
-    # Envia comprovante cifrado para o servidor
-    comprovante_pagamento = input("Insira o comprovante de pagamento: ")
-    nonce, comprovante_cifrado = cifrar_dados_aes_gcm(chave_sessao, comprovante_pagamento)
+        # Parte 5: Escolha do prato
+        prato = input("Escolha o prato que deseja pedir (Pizza, Hambúrguer, Sushi): ")
+        nonce_prato, prato_cifrado = cifrar_dados(chave_sessao, prato)
+        client_socket.send(nonce_prato)
+        client_socket.send(prato_cifrado)
 
-    # Conecta ao servidor e envia os dados
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client_socket.connect(('localhost', 12345))
+        # Parte 6: Enviar pagamento cifrado
+        pagamento = input("Digite o comprovante de pagamento: ")
+        nonce_pagamento, pagamento_cifrado = cifrar_dados(chave_sessao, pagamento)
+        client_socket.send(nonce_pagamento)
+        client_socket.send(pagamento_cifrado)
 
-    # Envia o tamanho do TOTP secret, seguido do secret em si
-    client_socket.send(len(secret).to_bytes(4, byteorder='big'))  # Envia o tamanho do TOTP secret
-    client_socket.send(secret.encode('utf-8'))  # Envia o TOTP secret
-
-    # Envia a chave de sessão como binário
-    client_socket.send(chave_sessao)  # Envia a chave de sessão
-    client_socket.send(nonce)  # Envia o nonce
-    client_socket.send(comprovante_cifrado)  # Envia o comprovante cifrado
-
-    # Recebe a mensagem cifrada do servidor (horário de entrega)
-    nonce_mensagem = client_socket.recv(12)
-    mensagem_cifrada = client_socket.recv(1024)
-
-    # Decifra a mensagem
-    mensagem_decifrada = decifrar_dados_aes_gcm(chave_sessao, nonce_mensagem, mensagem_cifrada)
-    print(f"Mensagem decifrada: {mensagem_decifrada}")
-
+        # Parte 9: Receber mensagem cifrada do servidor (horário de entrega)
+        nonce_mensagem = client_socket.recv(12)
+        mensagem_cifrada = client_socket.recv(1024)
+        mensagem_decifrada = decifrar_dados(chave_sessao, nonce_mensagem, mensagem_cifrada)
+        print(f"Mensagem do servidor: {mensagem_decifrada}")
+    
     client_socket.close()
 
 if __name__ == "__main__":
-    cliente()
+    login_cliente()
