@@ -1,90 +1,92 @@
 import os
 import base64
-import json
-import time
-import qrcode
-import secrets
-from getpass import getpass
 from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import PBKDF2
-from Crypto.Random import get_random_bytes
-from Crypto.Util.Padding import pad, unpad
-from pyotp import TOTP
+import pyotp
 
-# Constantes
-SALT_SIZE = 16
-KEY_SIZE = 32  # Para AES-256
-IV_SIZE = 16  # Tamanho do IV para AES
-ITERATIONS = 100000
+class CryptoHelper:
+    def __init__(self, password: str):
+        self.salt = os.urandom(16)  # Gera um salt aleatório
+        self.key = PBKDF2(password, self.salt, dkLen=32)  # Deriva a chave a partir da senha
 
-def generate_salt():
-    return get_random_bytes(SALT_SIZE)
-
-def derive_key(password, salt):
-    return PBKDF2(password, salt, dkLen=KEY_SIZE, count=ITERATIONS)
-
-def encrypt_data(key, iv, data):
-    cipher = AES.new(key, AES.MODE_GCM, nonce=iv)
-    ciphertext, tag = cipher.encrypt_and_digest(pad(data.encode(), AES.block_size))
-    return base64.b64encode(iv + tag + ciphertext).decode('utf-8')
-
-def decrypt_data(key, encrypted_data):
-    raw_data = base64.b64decode(encrypted_data)
-    iv, tag, ciphertext = raw_data[:IV_SIZE], raw_data[IV_SIZE:IV_SIZE+16], raw_data[IV_SIZE+16:]
-    cipher = AES.new(key, AES.MODE_GCM, nonce=iv)
-    decrypted_data = unpad(cipher.decrypt_and_verify(ciphertext, tag), AES.block_size)
-    return decrypted_data.decode('utf-8')
-
-def create_totp(secret):
-    totp = TOTP(secret)
-    return totp.now(), totp.provisioning_uri("user@example.com", issuer="iFoodSimulator")
-
-def main():
-    print("Bem-vindo ao simulador de pedido do iFood!")
+    def encrypt(self, raw: bytes) -> bytes:
+        cipher = AES.new(self.key, AES.MODE_GCM)
+        ciphertext, tag = cipher.encrypt_and_digest(raw)
+        return cipher.nonce + tag + ciphertext  # Retorna nonce + tag + ciphertext
     
-    # Escolha do prato
-    prato = input("Escolha um prato de comida (ex: Pizza, Sushi): ")
+    def decrypt(self, enc: bytes) -> bytes:
+        nonce, tag, ciphertext = enc[:16], enc[16:32], enc[32:]
+        cipher = AES.new(self.key, AES.MODE_GCM, nonce=nonce)
+        return cipher.decrypt_and_verify(ciphertext, tag)
 
-    # Solicitação do número de celular
-    celular = input("Digite seu número de celular: ")
+class TwoFactorAuth:
+    def __init__(self, secret: str):
+        self.totp = pyotp.TOTP(secret)  # Inicializa o TOTP com o segredo do usuário
 
-    # Geração do segredo TOTP
-    secret = base64.b32encode(secrets.token_bytes(10)).decode('utf-8')
-    totp_code, provisioning_uri = create_totp(secret)
-    print(f"Use o QR Code abaixo para autenticação (código TOTP: {totp_code}):")
-    img = qrcode.make(provisioning_uri)
-    img.show()
+    def get_totp(self):
+        return self.totp.now()  # Gera o TOTP atual
 
-    # Validação do código TOTP
-    user_totp_code = input("Digite o código TOTP que você recebeu: ")
-    if user_totp_code != totp_code:
-        print("Código TOTP inválido!")
-        return
+    def validate_totp(self, user_input):
+        return self.totp.verify(user_input)  # Verifica o código TOTP
 
-    # Derivação da chave
-    password = getpass("Digite uma senha para a chave de sessão: ")
-    salt = generate_salt()
-    key = derive_key(password, salt)
+class User:
+    def __init__(self, phone: str, password: str):
+        self.phone = phone
+        self.crypto_helper = CryptoHelper(password)
+        self.secret = pyotp.random_base32()  # Gera um segredo único para TOTP
 
-    # Pagamento e cifragem do comprovante
-    comprovante = input("Digite o comprovante de pagamento: ")
-    iv = get_random_bytes(IV_SIZE)
-    encrypted_receipt = encrypt_data(key, iv, comprovante)
+    def place_order(self, order_details: str):
+        encrypted_order = self.crypto_helper.encrypt(order_details.encode())  # Criptografa o pedido
+        print("Order placed. Encrypted receipt:", base64.b64encode(encrypted_order).decode())
+        return encrypted_order
 
-    print(f"Comprovante cifrado: {encrypted_receipt}")
+    def authenticate(self, totp_code: str):
+        auth = TwoFactorAuth(self.secret)  # Cria instance para verificação do TOTP
+        return auth.validate_totp(totp_code)  # Valida o TOTP fornecido
 
-    # Decifragem do comprovante
-    decrypted_receipt = decrypt_data(key, encrypted_receipt)
-    print(f"Comprovante decifrado: {decrypted_receipt}")
+class Restaurant:
+    def receive_order(self, encrypted_order: bytes):
+        print("Order received:", encrypted_order)  # Exibe o pedido recebido
 
-    # Envio da mensagem cifrada para o usuário
-    mensagem = f"Seu pedido de {prato} deve chegar em 30 minutos."
-    encrypted_message = encrypt_data(key, iv, mensagem)
-    print(f"Mensagem cifrada enviada: {encrypted_message}")
-
-    # Simulação da decifragem da mensagem recebida pelo usuário
-    decrypted_message = decrypt_data(key, encrypted_message)
-    print(f"Mensagem recebida: {decrypted_message}")
-
+# Simulação do fluxo
 if __name__ == "__main__":
-    main()
+    # Entrada do usuário
+    phone = input("Enter your phone number: ")
+    password = input("Enter your password: ")
+
+    # Criando um usuário
+    user = User(phone=phone, password=password)
+
+    # Escolha do pedido
+    print("Menu:")
+    print("1. Pizza Margherita")
+    print("2. Pasta Carbonara")
+    print("3. Burger")
+    choice = int(input("Please choose a dish by number (1-3): "))
+    
+    # Definindo detalhes do pedido com base na escolha
+    if choice == 1:
+        order_details = "Pizza Margherita"
+    elif choice == 2:
+        order_details = "Pasta Carbonara"
+    elif choice == 3:
+        order_details = "Burger"
+    else:
+        print("Invalid choice!")
+        exit()
+
+    # O usuário faz um pedido
+    order = user.place_order(order_details)
+
+    # O usuário solicita a TOTP
+    auth = TwoFactorAuth(user.secret)
+    print("Your TOTP code is:", auth.get_totp())
+
+    # O usuário digita o código TOTP
+    user_input = input("Enter TOTP code: ").strip()
+    if user.authenticate(user_input):
+        restaurant = Restaurant()
+        restaurant.receive_order(order)  # Envia o pedido ao restaurante
+        print("Order is authenticated and sent to restaurant.")
+    else:
+        print("Authentication failed.")
